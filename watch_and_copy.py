@@ -3,6 +3,7 @@
 import os
 import sys
 import uuid
+import time
 
 
 ''' ===========================================================================
@@ -13,39 +14,61 @@ import uuid
 
 # GLOBALS
 input_part_counter = 0                      
+keep_polling = True
 
 # CONSTANTS
-WATCHED_FOLDER = "/cygdrive/c/Aso_experiment/Aso-44channelActive/Loreta/Loreta/bin/Debug/WatchFolderEEG/"
+SOURCE_FOLDER = "/cygdrive/c/Users/szymon.czaja/Desktop/in/"
+DESTINATION_FOLDER = "/cygdrive/c/Users/szymon.czaja/Desktop/out"
+
 EXPECTED_FILENAME_REPLACEMENT_TOKEN = "[input_part_counter]"
 EXPECTED_FILENAME = "eeg_" + EXPECTED_FILENAME_REPLACEMENT_TOKEN + ".txt"
-DESTINATION_FOLDER = "/cygdrive/c/Users/1005120z/Desktop/"
+
+MOLE_FILENAME_REPLACEMENT_TOKEN = "[uuid]"
+MOLE_FILENAME_EXTENSION = ".mole"
+MOLE_FILENAME = MOLE_FILENAME_REPLACEMENT_TOKEN + MOLE_FILENAME_EXTENSION
+
 
 POLL_INTERVAL = 1               # seconds
 LOCK_REATTEMPT_DELAY = 0.1      # seconds 
 
+
 def main(argv):
-    global input_part_counter
-    firstfilepath = first_file_path()
-    print ("Starting with file: {:s}").format(firstfilepath)
+    firstfilepath = get_expected_file()
+    print ("Expecting file: {:s}").format(firstfilepath)
+    poll(firstfilepath)
+
 
 ''' ===========================================================================
     Checks if the files are ready.
     For a file to be ready it must exist and can be opened in append mode.
     ___________________________________________________________________________
 '''
+
 def poll(filepath):
+    global keep_polling
+    try: 
+        while keep_polling:
+            print ".",
+            sys.stdout.flush()
+            check_candidates()
+            time.sleep(LOCK_REATTEMPT_DELAY)
+    except KeyboardInterrupt:
+        keep_polling = False
+        
 
-    while not os.path.exists(filepath):
-        print "%s hasn't arrived. Waiting %s seconds." % (filepath, wait_time) 
-        time.sleep(POLL_INTERVAL)
 
-        # If the file exists but locked, wait wait_time seconds and check 
-        # again until it's no longer locked by another process.
-
-        while is_locked(filepath):
-            time.sleep(LOCK_REATTEMPT_DEPLAY)
-
-
+''' ===========================================================================
+    List files in the watched folder and start copy operation if the expected 
+    file has appeared.
+    ___________________________________________________________________________
+'''
+def check_candidates():
+    files = os.listdir(SOURCE_FOLDER)
+    for f in files:
+        expected = get_expected_file()
+        if expected == f:
+            advance_count()
+            atomic_copy(expected)
 
 
 ''' ===========================================================================
@@ -53,20 +76,37 @@ def poll(filepath):
     http://stackoverflow.com/questions/11614815/a-safe-atomic-file-copy-operation
     ___________________________________________________________________________
 '''
-def atomic_copy():
+def atomic_copy(expected):
+    print "*"
+    in_file_path = os.path.join(SOURCE_FOLDER, expected)
+    while is_locked(in_file_path):
+        time.sleep(LOCK_REATTEMPT_DELAY)
+        
+    print "\nAttempting to move: {:s}".format(expected)
+
+    out_file_path = os.path.join(DESTINATION_FOLDER, expected)
+    
     # Check whether the file already exists in the destination folder. Stop if it does.
+    if os.path.isfile(out_file_path):
+        advance_count()
+        print "{:s} already exists - Skipping and moving onto the next file"
+        return
 
     # Generate a unique ID
-    
-    uuid_str = uuid.uuid4()
+    uuid_str = str(uuid.uuid4())
 
-    # Copy the source file to the target folder with a temporary name, say, <target>.<UUID>.tmp.
+    # Copy the source file to the target folder with a temporary name [UUID].tmp.
+    temp_file = "{:s}.tmp".format(uuid_str)
+    tmp_out_file_path = os.path.join(DESTINATION_FOLDER, temp_file)
+    os.rename(in_file_path, tmp_out_file_path)
+     
+    # Rename the copy to [UUID].tmp to [UUID].mole.
+    mole_file = MOLE_FILENAME.replace(MOLE_FILENAME_REPLACEMENT_TOKEN, uuid_str)
+    mole_out_file_path = os.path.join(DESTINATION_FOLDER, mole_file)
+    os.rename(tmp_out_file_path, mole_out_file_path)
 
-    
-
-    # Rename the copy <target>-<UUID>.mole.tmp.
-
-    # Look for any other files matching the pattern <target>-*.mole.tmp.
+    # Look for any other files matching the pattern [UUID].mole.
+    list_moles(uuid_str, mole_file)
 
     # If their UUID compares greater than yours, attempt to delete it. (Don't worry if it's gone.)
 
@@ -77,14 +117,38 @@ def atomic_copy():
     # Attempt to rename your temporary file to its final name, <target>. (Don't worry if it's gone.)
 
 
-def first_file_path():
+'''
+'''
+def list_moles(uuid_str, mole_file_name):
+    existing_files = os.listdir(DESTINATION_FOLDER)
+    for existing in existing_files:
+        if MOLE_FILENAME_EXTENSION in existing:
+            existing_uuid = existing.replace(MOLE_FILENAME_EXTENSION, "")
+            print "exisitng {:s}".format(existing_uuid)
+            if existing_uuid > uuid_str:
+                existing_file = os.path.join(DESTINATION_FOLDER, existing)
+                remove_file(existing_file)
+            else:
+                existing_file = os.path.join(DESTINATION_FOLDER, mole_file_name)
+                remove_file(existing_file)
+
+
+
+
+'''
+'''
+def get_expected_file():
     part_counter_str = str(input_part_counter)
     fileName = EXPECTED_FILENAME.replace(EXPECTED_FILENAME_REPLACEMENT_TOKEN, part_counter_str)
-    filePath = (
-        WATCHED_FOLDER
-        + fileName
-    )
-    return filePath
+    return fileName
+
+
+'''
+'''
+def advance_count():
+    global input_part_counter
+    input_part_counter += 1
+
 
 ''' ===========================================================================
     Checks if a file is locked by opening it in append mode.
@@ -97,7 +161,7 @@ def is_locked(filepath):
     file_object = None
     if os.path.exists(filepath):
         try:
-            print "Trying to open %s." % filepath
+            print "%s file detected." % filepath
             buffer_size = 8
             # Opening file in append mode and read the first 8 characters.
             file_object = open(filepath, 'a', buffer_size)
@@ -110,10 +174,19 @@ def is_locked(filepath):
         finally:
             if file_object:
                 file_object.close()
-                print "%s closed." % filepath
     else:
          print "%s not found." % filepath
     return locked
+
+
+'''
+
+'''
+def remove_file(filename):
+    try:
+        os.remove(filename)
+    except OSError:
+        pass
 
 
 '''
