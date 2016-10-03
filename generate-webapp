@@ -1,0 +1,250 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import shutil
+import xml.dom.minidom
+import subprocess
+
+# CONSTANTS
+MVN_IS_INTERACTIVE = "false"
+
+PROPS_COMPILER_PLUGIN_VSN_KEY = "compiler.plugin.version"
+PROPS_COMPILER_PLUGIN_VSN_VAL = "3.1"
+PROPS_JDK_VSN_KEY = "jdk.version"
+PROPS_JDK_VSN_VAL = "1.8"
+
+PROPS_PARENT_VSN_VAL = "1.0-SNAPSHOT"
+
+MODULES = [
+        [ "{:s}", "{:s}"            , "pom" ]
+      , [ "{:s}", "{:s}-web"        , "war" ]
+      , [ "{:s}", "{:s}-ws"         , "jar" ]
+      , [ "{:s}", "{:s}-services"   , "jar" ]
+      , [ "{:s}", "{:s}-dao"        , "jar" ]
+      , [ "{:s}", "{:s}-models"     , "jar" ]
+      , [ "{:s}", "{:s}-common"     , "jar" ]
+]
+
+# GLOBALS
+props_parent_vsn_key = ""
+
+
+def main(argv):
+
+    if len(argv) < 2:
+        advise()
+        return
+
+    groupId = argv[0]
+    artifactId = argv[1]
+    global props_parent_vsn_key
+    props_parent_vsn_key = artifactId + ".version"
+
+    index = 0
+    modules_len = len(MODULES)
+    for module in MODULES:
+        folder = module[1].format(artifactId)
+
+        ok = remove_if_exists(folder)
+        if ok == False:
+            print "{:s} already exists.".format(folder)
+            return
+
+        cmd = mvn(module[0].format(groupId), folder)
+        run(cmd)
+        if index == 0:
+            groupId = groupId + "." + artifactId
+            os.chdir(folder)
+            pom = "pom.xml"
+            dom = read(pom)
+            add_properties(dom)
+            add_build(dom)
+        else: 
+            pom = folder + "/pom.xml"
+            dom = read(pom)
+            remove_node("version", dom, 1)
+            
+            # add dependency
+            next_module_ix = (index + 1)
+            if next_module_ix < modules_len:
+                next_module = MODULES[next_module_ix]
+                group = next_module[0].format(groupId)
+                artifact = next_module[1].format(artifactId)
+                vsn = "${" + props_parent_vsn_key + "}"
+                add_dependency(dom, group, artifact,vsn)
+            
+        # open pom.xml and change packing to POM
+        change_packaging(module[2], dom)
+        remove_node("url", dom, 0)
+
+        remove_dependency_nodes(dom)
+        write(dom, pom)
+
+        index += 1
+
+    shutil.rmtree("src")
+    os.chdir("../")
+    print "done" 
+
+
+def remove_if_exists(folder):
+    if os.path.exists(folder):
+        try:
+            shutil.rmtree(folder)
+        except OSError as exception:
+            print exception
+
+
+def write(dom, pom):
+    file_handle = open(pom, "wb")
+    #pretty = dom.toprettyxml()
+    pretty = dom.toxml()
+    file_handle.write(pretty)
+    file_handle.close()
+
+
+def read(pom):
+    print "Parsing POM {:s}\n".format(pom)
+    dom = xml.dom.minidom.parse(pom)
+    return dom
+
+def add_dependency(dom, group, artifact, vsn):
+    project = dom.documentElement
+    dependency = dom.createElement("dependency")
+    dependencies = dom.getElementsByTagName('dependencies')[0]
+    dependencies.appendChild(dependency)
+    group_id = dom.createElement("groupId")
+    group_id_text = dom.createTextNode(group)
+    dependency.appendChild(group_id)
+    group_id.appendChild(group_id_text)
+    artifact_id = dom.createElement("artifactId")
+    artifact_id_text = dom.createTextNode(artifact)
+    dependency.appendChild(artifact_id)
+    artifact_id.appendChild(artifact_id_text)
+    version = dom.createElement("version")
+    version_text = dom.createTextNode(vsn)
+    dependency.appendChild(version)
+    version.appendChild(version_text)
+
+
+def add_properties(dom):
+    project = dom.documentElement
+    properties = dom.createElement("properties")
+    project.appendChild(properties)
+    compiler_plugin_version = dom.createElement(PROPS_COMPILER_PLUGIN_VSN_KEY)
+    properties.appendChild(compiler_plugin_version)
+    compiler_plugin_version_text = dom.createTextNode(PROPS_COMPILER_PLUGIN_VSN_VAL)
+    compiler_plugin_version.appendChild(compiler_plugin_version_text)
+    jdk_version = dom.createElement(PROPS_JDK_VSN_KEY)
+    properties.appendChild(jdk_version)
+    jdk_version_text = dom.createTextNode(PROPS_JDK_VSN_VAL)
+    jdk_version.appendChild(jdk_version_text)
+    app_version = dom.createElement(props_parent_vsn_key)
+    properties.appendChild(app_version)
+    app_version_text = dom.createTextNode(PROPS_PARENT_VSN_VAL)
+    app_version.appendChild(app_version_text)
+
+
+
+def add_build(dom):
+    project = dom.documentElement
+    build = dom.createElement("build")
+    project.appendChild(build)
+    plugins = dom.createElement("plugins")
+    build.appendChild(plugins)
+    plugin = dom.createElement("plugin")
+    plugins.appendChild(plugin)
+    group_id = dom.createElement("groupId")
+    group_id_text = dom.createTextNode("org.apache.maven.plugins")
+    plugin.appendChild(group_id)
+    group_id.appendChild(group_id_text)
+    artifact_id = dom.createElement("artifactId")
+    artifact_id_text = dom.createTextNode("maven-compiler-plugin")
+    plugin.appendChild(artifact_id)
+    artifact_id.appendChild(artifact_id_text)
+    version = dom.createElement("version")
+    version_text = dom.createTextNode("${" + PROPS_COMPILER_PLUGIN_VSN_KEY + "}")
+    plugin.appendChild(version)
+    version.appendChild(version_text)
+    configuration = dom.createElement("configuration")
+    plugin.appendChild(configuration)
+    source = dom.createElement("source")
+    source_text = dom.createTextNode("${" + PROPS_JDK_VSN_KEY + "}")
+    configuration.appendChild(source)
+    source.appendChild(source_text)
+    target = dom.createElement("target")
+    target_text = dom.createTextNode("${jdk.version}")
+    configuration.appendChild(target)
+    target.appendChild(target_text)
+
+
+def change_packaging(packaging_type, dom):
+    packaging_str = "packaging"
+    packaging = dom.getElementsByTagName(packaging_str)
+    if packaging.length == 0:
+        packaging = dom.createElement(packaging_str)
+        packaging_text = dom.createTextNode(packaging_type)
+        packaging.appendChild(packaging_text)
+        project = dom.documentElement
+        # append packaging before the (second) artifactId
+        artifact = project.getElementsByTagName('artifactId')[1]
+        project.insertBefore(packaging, artifact)
+    else:
+        packaging = packaging[0]
+        packaging.firstChild.replaceWholeText(packaging_type)
+
+
+def remove_node(name, dom, index):
+    node = dom.getElementsByTagName(name)[index]
+    project = dom.documentElement
+    project.removeChild(node)
+
+
+def remove_dependency_nodes(dom):
+    dependencies = dom.getElementsByTagName('dependencies')[0]
+    dependency = dependencies.getElementsByTagName('dependency')[0]
+    dependencies.removeChild(dependency)
+
+
+def mvn(groupId, artifactId):
+    mvn = ("mvn archetype:generate"
+            " -DgroupId={:s}"
+            " -DartifactId={:s}"
+            " -DinteractiveMode={:s}"
+            ).format(groupId, artifactId, MVN_IS_INTERACTIVE)
+    print ("Running: {:s} ").format(mvn)
+    return mvn
+
+
+def run(cmd):
+    try:
+        retcode = subprocess.call(cmd, shell=True)
+        if retcode < 0:
+            print >>sys.stderr, "Child was terminated by signal", -retcode
+    except OSError as e:
+            print >>sys.stderr, "Execution failed:", e
+
+
+def advise():
+    advice = (
+        "The script expects" 
+        " {:d} parameters: "
+        "{:s} and {:s}"
+        ).format(2, "groupId", "artifactId")
+    print advice
+
+
+'''
+
+ Python defines special variables before executing the code. 
+ For example, if the python interpreter is running the source file as the main program, 
+ it sets the special __name__ variable to have a value "__main__". 
+ If this file is being imported from another module, __name__ will be set to the module's name.
+
+'''
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+
+
