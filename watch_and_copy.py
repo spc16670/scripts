@@ -4,7 +4,7 @@ import os
 import sys
 import uuid
 import time
-
+from shutil import copyfile
 
 ''' ===========================================================================
     The purpose of this script is to poll some location and copy file(s) which 
@@ -15,18 +15,25 @@ import time
 # GLOBALS
 input_part_counter = 0                      
 keep_polling = True
+dotter = 0
 
 # CONSTANTS
+
+''' If set to True the files are copied, otherwise files are moved '''
+JUST_COPY = True
+
 SOURCE_FOLDER = "/cygdrive/c/Users/szymon.czaja/Desktop/in/"
+
 DESTINATION_FOLDER = "/cygdrive/c/Users/szymon.czaja/Desktop/out"
 
 EXPECTED_FILENAME_REPLACEMENT_TOKEN = "[input_part_counter]"
 EXPECTED_FILENAME = "eeg_" + EXPECTED_FILENAME_REPLACEMENT_TOKEN + ".txt"
 
+
+''' file name patterns for intermittent files '''
 MOLE_FILENAME_REPLACEMENT_TOKEN = "[uuid]"
 MOLE_FILENAME_EXTENSION = ".mole"
 MOLE_FILENAME = MOLE_FILENAME_REPLACEMENT_TOKEN + MOLE_FILENAME_EXTENSION
-
 
 POLL_INTERVAL = 1               # seconds
 LOCK_REATTEMPT_DELAY = 0.1      # seconds 
@@ -35,6 +42,17 @@ LOCK_REATTEMPT_DELAY = 0.1      # seconds
 def main(argv):
     firstfilepath = get_expected_file()
     print ("Expecting file: {:s}").format(firstfilepath)
+    
+    source_dir_exists = os.path.isdir(SOURCE_FOLDER)
+    if not source_dir_exists:
+        print ("Does source folder exist? {:s}").format(SOURCE_FOLDER)
+        return
+
+    dest_dir_exists = os.path.isdir(DESTINATION_FOLDER)
+    if not dest_dir_exists:
+        print ("Does destination folder exist? {:s}").format(DESTINATION_FOLDER)
+        return 
+
     poll(firstfilepath)
 
 
@@ -48,10 +66,9 @@ def poll(filepath):
     global keep_polling
     try: 
         while keep_polling:
-            print ".",
             sys.stdout.flush()
             check_candidates()
-            time.sleep(LOCK_REATTEMPT_DELAY)
+            time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         keep_polling = False
         
@@ -62,14 +79,22 @@ def poll(filepath):
     file has appeared.
     ___________________________________________________________________________
 '''
+
 def check_candidates():
+    global keep_polling
+    expected = get_expected_file()
+    global dotter
+    if (dotter % 20 == 0):
+        print "awaiting {:s} ".format(expected)
+    else:
+        print ".",
+    dotter = dotter + 1
     files = os.listdir(SOURCE_FOLDER)
-    for f in files:
-        expected = get_expected_file()
+    for f in files:    
         if expected == f:
             advance_count()
             atomic_copy(expected)
-
+        
 
 ''' ===========================================================================
     Atomic copy operation based on the 'whack-a-mole' algorithm as explaied here:
@@ -88,8 +113,7 @@ def atomic_copy(expected):
     
     # Check whether the file already exists in the destination folder. Stop if it does.
     if os.path.isfile(out_file_path):
-        advance_count()
-        print "{:s} already exists - Skipping and moving onto the next file"
+        print "{:s} already exists - Skipping and moving onto the next file".format(expected)
         return
 
     # Generate a unique ID
@@ -98,15 +122,24 @@ def atomic_copy(expected):
     # Copy the source file to the target folder with a temporary name [UUID].tmp.
     temp_file = "{:s}.tmp".format(uuid_str)
     tmp_out_file_path = os.path.join(DESTINATION_FOLDER, temp_file)
-    os.rename(in_file_path, tmp_out_file_path)
+
+    if JUST_COPY: 
+        copyfile(in_file_path, tmp_out_file_path)
+    else:
+        os.rename(in_file_path, tmp_out_file_path)
      
     # Rename the copy to [UUID].tmp to [UUID].mole.
     mole_file = MOLE_FILENAME.replace(MOLE_FILENAME_REPLACEMENT_TOKEN, uuid_str)
     mole_out_file_path = os.path.join(DESTINATION_FOLDER, mole_file)
     os.rename(tmp_out_file_path, mole_out_file_path)
 
+    ### simple copy
+    final_file_path = os.path.join(DESTINATION_FOLDER, expected)
+    os.rename(mole_out_file_path, final_file_path)
+
+    ### copy using whack a mole algorithm
     # Look for any other files matching the pattern [UUID].mole.
-    list_moles(uuid_str, mole_file)
+    #list_moles(uuid_str, mole_file)
 
     # If their UUID compares greater than yours, attempt to delete it. (Don't worry if it's gone.)
 
@@ -117,8 +150,10 @@ def atomic_copy(expected):
     # Attempt to rename your temporary file to its final name, <target>. (Don't worry if it's gone.)
 
 
+
 '''
 '''
+
 def list_moles(uuid_str, mole_file_name):
     existing_files = os.listdir(DESTINATION_FOLDER)
     for existing in existing_files:
