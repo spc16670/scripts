@@ -1,0 +1,1 @@
+INCLUDE mail-1.5.0.jar on the classpath.
